@@ -22,6 +22,7 @@ import {
   CreditCard,
   Star,
   RotateCcw,
+  Upload,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -86,10 +87,12 @@ export function Dashboard({ user }: { user: { name: string; email: string } }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [renaming, setRenaming] = useState<DesignSummary | null>(null);
   const [deleting, setDeleting] = useState<DesignSummary | null>(null);
   const autoTemplate = useRef(false);
+  const importInput = useRef<HTMLInputElement>(null);
   const canCreate = !workspaceId || workspaces.find((workspace) => workspace.id === workspaceId)?.role !== "viewer";
 
   const load = useCallback(async () => {
@@ -180,6 +183,22 @@ export function Dashboard({ user }: { user: { name: string; email: string } }) {
     await load();
   }
 
+  async function importProject(file: File) {
+    if (!canCreate) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const { importPortableProject } = await import("@/components/editor/export");
+      const id = await importPortableProject(file, workspaceId);
+      router.push(`/design/${id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import project");
+    } finally {
+      setImporting(false);
+      if (importInput.current) importInput.current.value = "";
+    }
+  }
+
   return (
     <div className="flex min-h-screen flex-1 bg-[#1d1c22] text-[#f7f5fa]">
       <aside className="sticky top-0 hidden h-screen w-[76px] shrink-0 flex-col items-center border-r border-white/10 bg-[#211e29] py-4 md:flex" aria-label="Workspace navigation">
@@ -266,9 +285,15 @@ export function Dashboard({ user }: { user: { name: string; email: string } }) {
           </section>
 
           <section id="designs" aria-labelledby="designs-heading" className="scroll-mt-8">
-            <div className="mb-5 flex items-center justify-between">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <h2 id="designs-heading" className="text-xl font-semibold text-[#f3f1f6]">{workspaceId ? "Team designs" : "Your designs"}</h2>
-              {q && <span className="text-xs text-[#aaa5b2]">Results for &quot;{query}&quot;</span>}
+              <div className="flex items-center gap-3">
+                {q && <span className="text-xs text-[#aaa5b2]">Results for &quot;{query}&quot;</span>}
+                <input ref={importInput} type="file" accept=".lumio" className="sr-only" aria-label="Choose Lumio project" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProject(file); }} />
+                <button type="button" disabled={!canCreate || importing} onClick={() => importInput.current?.click()} className="inline-flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50">
+                  {importing ? <Spinner size={14} /> : <Upload size={14} />} Import project
+                </button>
+              </div>
             </div>
             <div className="mb-5 flex flex-wrap items-center gap-2" role="group" aria-label="Design filters">
               {(["active", "favourites", "trash"] as const).map((item) => (

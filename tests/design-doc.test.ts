@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blankDoc, findUnsafeObject, isSafeImageSrc, parseDesignDoc } from "@/lib/design/types";
+import { blankDoc, findUnsafeObject, isSafeImageSrc, mapDesignUploadUrls, parseDesignDoc } from "@/lib/design/types";
 import { TEMPLATES, templateToDoc } from "@/lib/design/templates";
 import { scaleObjects } from "@/lib/design/scale";
 
@@ -44,6 +44,25 @@ describe("isSafeImageSrc", () => {
     expect(isSafeImageSrc("/api/uploads/../designs")).toBe(false);
     expect(isSafeImageSrc("javascript:alert(1)")).toBe(false);
     expect(isSafeImageSrc(42)).toBe(false);
+  });
+});
+
+describe("portable project image references", () => {
+  it("rewrites nested images without changing the source design or inline images", () => {
+    const doc = blankDoc(100, 100);
+    const oldUrl = "/api/uploads/abcdefgh12345678";
+    const newUrl = "/api/uploads/newimage12345678";
+    doc.pages[0].objects = [
+      { type: "Group", objects: [{ type: "Image", src: oldUrl }] },
+      { type: "Rect", clipPath: { type: "Image", src: oldUrl } },
+      { type: "Image", src: "data:image/png;base64,iVBORw0KGgo=" },
+    ];
+    const seen: string[] = [];
+    const rewritten = mapDesignUploadUrls(doc, (url) => { seen.push(url); return newUrl; });
+    expect(seen).toEqual([oldUrl, oldUrl]);
+    expect(JSON.stringify(rewritten)).not.toContain(oldUrl);
+    expect(JSON.stringify(doc)).toContain(oldUrl);
+    expect(parseDesignDoc(rewritten).ok).toBe(true);
   });
 });
 

@@ -106,6 +106,22 @@ export function parseDesignDoc(input: unknown): ParseResult<DesignDoc> {
   return { ok: true, value: parsed.data };
 }
 
+/** Visits upload-backed images, including those nested in groups and clip paths. */
+export function mapDesignUploadUrls(doc: DesignDoc, map: (url: string) => string): DesignDoc {
+  const copy = structuredClone(doc);
+  const visit = (objects: SerializedObject[]) => {
+    for (const obj of objects) {
+      if (String(obj.type).toLowerCase() === "image" && typeof obj.src === "string" && obj.src.startsWith("/api/uploads/")) {
+        obj.src = map(obj.src);
+      }
+      if (Array.isArray(obj.objects)) visit(obj.objects as SerializedObject[]);
+      if (obj.clipPath && typeof obj.clipPath === "object" && !Array.isArray(obj.clipPath)) visit([obj.clipPath as SerializedObject]);
+    }
+  };
+  for (const page of copy.pages) visit(page.objects);
+  return copy;
+}
+
 export function newPageId(): string {
   const bytes = new Uint8Array(9);
   crypto.getRandomValues(bytes);

@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input, Spinner } from "@/components/ui/input";
 import { useEditor } from "./editor-context";
-import { exportDesign, type ExportFormat } from "./export";
+import { exportDesign, exportPortableProject, type ExportFormat } from "./export";
 import { HealthReport } from "./health-report";
 
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
@@ -92,6 +92,25 @@ export function DownloadDialog({ open, onClose, title }: { open: boolean; onClos
       {open && <HealthReport currentOnly={which === "current"} scale={format === "svg" ? 1 : scale} transparent={transparent && format === "png"} onReadyChange={setHealthReady} />}
       <Button className="mt-6 w-full" size="lg" onClick={run} disabled={busy || !healthReady}>
         {busy && <Spinner />} Download
+      </Button>
+      <Button
+        className="mt-2 w-full"
+        variant="secondary"
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await exportPortableProject(engine.toDoc(), title);
+            notify("Editable project download started");
+            onClose();
+          } catch (err) {
+            notify(err instanceof Error ? err.message : "Project export failed", "error");
+          } finally {
+            setBusy(false);
+          }
+        }}
+        disabled={busy}
+      >
+        {busy && <Spinner />} Save editable Lumio project (.lumio)
       </Button>
     </Dialog>
   );
