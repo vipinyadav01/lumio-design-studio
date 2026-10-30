@@ -1,6 +1,8 @@
 "use client";
 
-import type { DesignDoc } from "@/lib/design/types";
+import { api } from "@/lib/api-client";
+import { mapDesignUploadUrls, parseDesignDoc, type DesignDoc } from "@/lib/design/types";
+import { ACCEPTED_IMAGE_TYPES, uploadImage } from "./uploads";
 import { renderPage, renderPageSvg } from "./fabric-setup";
 
 export type ExportFormat = "png" | "jpeg" | "svg" | "pdf";
@@ -25,6 +27,88 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+}
+
+const MAX_PROJECT_BYTES = 64 * 1024 * 1024;
+const MAX_PROJECT_ASSETS = 100;
+const MAX_PROJECT_ASSET_BYTES = 10 * 1024 * 1024;
+
+type ProjectAsset = { mime: string; data: string };
+
+/** A portable, editable document with every referenced upload embedded. */
+export async function exportPortableProject(doc: DesignDoc, title: string): Promise<void> {
+  const urls = new Set<string>();
+  mapDesignUploadUrls(doc, (url) => { urls.add(url); return url; });
+  if (urls.size > MAX_PROJECT_ASSETS) throw new Error(`A project can include at most ${MAX_PROJECT_ASSETS} images`);
+  const assets: Record<string, ProjectAsset> = {};
+  let totalImageBytes = 0;
+  for (const url of urls) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Could not include image ${url}. Restore the missing upload and try again.`);
+    const blob = await response.blob();
+    if (!ACCEPTED_IMAGE_TYPES.includes(blob.type) || blob.size > MAX_PROJECT_ASSET_BYTES) throw new Error(`Image ${url} is unsupported or larger than 10 MB`);
+    totalImageBytes += blob.size;
+    if (totalImageBytes > 40 * 1024 * 1024) throw new Error("Project images are larger than 40 MB in total");
+    assets[url] = { mime: blob.type, data: await blobToDataUrl(blob) };
+  }
+  const bundle = new Blob([JSON.stringify({ format: "lumio-project", version: 1, title, doc, assets })], { type: "application/json" });
+  if (bundle.size > MAX_PROJECT_BYTES) throw new Error("Project is larger than 64 MB");
+  const url = URL.createObjectURL(bundle);
+  download(url, `${slug(title)}.lumio`);
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** Imports a bundle into a new design, keeping the source project untouched. */
+export async function importPortableProject(file: File, workspaceId: string | null): Promise<string> {
+  if (file.size > MAX_PROJECT_BYTES) throw new Error("Project file is larger than 64 MB");
+  let raw: unknown;
+  try { raw = JSON.parse(await file.text()); } catch { throw new Error("Invalid Lumio project file"); }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid Lumio project file");
+  const bundle = raw as Record<string, unknown>;
+  if (bundle.format !== "lumio-project" || bundle.version !== 1) throw new Error("Unsupported Lumio project version");
+  if (typeof bundle.title !== "string" || !bundle.title.trim() || bundle.title.length > 120) throw new Error("Invalid project title");
+  const parsed = parseDesignDoc(bundle.doc);
+  if (!parsed.ok) throw new Error(`Invalid design: ${parsed.error}`);
+  if (!bundle.assets || typeof bundle.assets !== "object" || Array.isArray(bundle.assets)) throw new Error("Project images are missing");
+  const assets = bundle.assets as Record<string, unknown>;
+  const urls = new Set<string>();
+  mapDesignUploadUrls(parsed.value, (url) => { urls.add(url); return url; });
+  if (urls.size > MAX_PROJECT_ASSETS || Object.keys(assets).length !== urls.size) throw new Error("Project image list does not match the design");
+
+  const files = new Map<string, File>();
+  for (const url of urls) {
+    const asset = Object.hasOwn(assets, url) ? assets[url] : null;
+    if (!asset || typeof asset !== "object" || Array.isArray(asset)) throw new Error(`Project is missing image ${url}`);
+    const { mime, data } = asset as ProjectAsset;
+    if (!ACCEPTED_IMAGE_TYPES.includes(mime) || typeof data !== "string" || !data.startsWith(`data:${mime};base64,`) || data.length > 14_000_000) throw new Error(`Invalid project image ${url}`);
+    const blob = await fetch(data).then((response) => response.blob());
+    if (!blob.size || blob.size > MAX_PROJECT_ASSET_BYTES || blob.type !== mime) throw new Error(`Invalid project image ${url}`);
+    const extension = mime === "image/jpeg" ? "jpg" : mime.split("/")[1];
+    files.set(url, new File([blob], `project-${url.split("/").pop()}.${extension}`, { type: mime }));
+  }
+
+  const importedIds: string[] = [];
+  try {
+    const replacements = new Map<string, string>();
+    for (const [oldUrl, image] of files) {
+      const upload = await uploadImage(image);
+      importedIds.push(upload.id);
+      replacements.set(oldUrl, upload.url);
+    }
+    const doc = mapDesignUploadUrls(parsed.value, (url) => {
+      const replacement = replacements.get(url);
+      if (!replacement) throw new Error(`Project is missing image ${url}`);
+      return replacement;
+    });
+    const { design } = await api<{ design: { id: string } }>("/api/designs", {
+      method: "POST",
+      json: { title: bundle.title.trim(), doc, ...(workspaceId ? { workspaceId } : {}) },
+    });
+    return design.id;
+  } catch (error) {
+    await Promise.allSettled(importedIds.map((id) => api(`/api/uploads/${id}`, { method: "DELETE" })));
+    throw error;
+  }
 }
 
 /** Inlines this app's upload URLs so the SVG is self-contained. */
